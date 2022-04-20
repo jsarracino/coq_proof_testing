@@ -1,28 +1,79 @@
 Coq Serapy Scraper
 ==================
 
-A library for scraping proof data from a Coq .v file into static text,
+A project for scraping proof data from a Coq .v file into static text,
 using the [coq_serapy](https://github.com/HazardousPeach/coq_serapy)
 interface to Coq (a python binding for coq-serapi).
 
 This code was originally developed as part of the
 [Proverbot9001](https://github.com/UCSD-PL/proverbot9001) project. If
 you use this library as part of published research, some sort of
-acknoledgement would be nice, but is not required.
+acknowledgement would be nice, but is not required.
+
+Dependencies
+------------
+
+To use this project, you need:
+
+Opam 2.0 or later
+Installed through Opam:
+* Coq 8.9-8.12 (versions past 8.12 may also work, but have not been tested)
+* coq-serapi
+
+Installed through pip (you can install these with `pip install -r requirements.txt`):
+* pathlib_revised
+* tqdm
+* sexpdata
+* pampy
+
+Installed through github:
+* coq_serapy
 
 Usage
 -----
+
+First, make sure that opam binaries like `sertop` are in your path:
+   `eval $(opam env)`
+
+Then, scrape the file. The simplest form of the command is:
+`python3 /path/to/scraper/__init__.py /path/to/source/file.v`
+
+This assumes that you are currently in the root of the target project,
+and that if your files require any arguments to compile, they are
+found in a `_CoqProject` in the current directory. Sometimes this file
+is called `Make`, if so rename or copy it to `_CoqProject`. If you're
+not in the project root, or the `_CoqProject` file is in a different
+directory, pass the argument
+`--prelude=/path/to/coqproject/dir/`. Then, all filenames that are
+relative should be specified relative to that directory.
+
+Output is produced in the same location as each input, as a
+`*.v.scrape` file, and the output for all files is concatenated and
+printed to standard out. You can suppress output to standard out with
+`-o /dev/null`, or print the output to a file with `-o /path/to/file`
+(individual file output will still also be outputted to `*.v.scrape`
+in the source file directory).
+
+The `-j` option can be used to specify a number of threads, when there
+are multiple file arguments; scraping is parallelized at the file
+level.
+
+The `-c` option can be used to skip scraping when a `*.v.scrape` file
+already exists, and use the existing file instead.
+
+`-P` will print progress bars for files that are being scraped and
+linearized.
+
+More options can be found in `__init__.py` at the top of the `main`
+function.
+
 
 Data format
 -------------
 
 As input, the scraper takes a `*.v` file that runs to completion with
-the installed Coq version. As this project depends on coq_serapy, it
-supports Coq versions 8.9-8.12. Versions past 8.12 may also work, but
-have not been tested.
+the installed Coq version.
 
-Output is produced in the same location as the input, as a
-`*.v.scrape` file.
 
 For ease of streaming parsing, the datafile contains information about
 one Coq command per line. The lines are in order that the Coq commands
@@ -93,6 +144,3 @@ as-is, you can pass the flag `--no-linearize`.
 The linearizer can also be invoked as a standalone module to just
 linearize coq files, with `python3
 path/to/scraper/linearize_semicolons.py filename ...`.
-
-Reading the code
-----------------
