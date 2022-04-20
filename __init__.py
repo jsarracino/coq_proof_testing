@@ -78,7 +78,7 @@ def main():
     tasks = [(idx % args.threads, filename) for (idx, filename)
              in enumerate(args.inputs)]
     with multiprocessing.Pool(args.threads) as pool:
-        scrape_result_files = pool.imap_unordered(
+        scrape_result_files = pool.imap(
             functools.partial(scrape_file, coqargs, args, includes),
             tasks)
         with (open(args.output, 'w') if args.output
