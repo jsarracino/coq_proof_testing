@@ -87,5 +87,12 @@ and subsequent scrapes check the hash on the linearized file, and use
 its contents if the hash matches the current content of the `*.v`
 file. If the hash doesn't match, the file will be re-linearized.
 
+If you don't want your source file linearized, and want to scrape it
+as-is, you can pass the flag `--no-linearize`.
+
+The linearizer can also be invoked as a standalone module to just
+linearize coq files, with `python3
+path/to/scraper/linearize_semicolons.py filename ...`.
+
 Reading the code
 ----------------
