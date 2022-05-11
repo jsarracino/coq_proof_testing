@@ -1,4 +1,0 @@
-pathlib_revised
-tqdm
-sexpdata
-pampy
