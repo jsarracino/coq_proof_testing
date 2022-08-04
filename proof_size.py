@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
 import os, sys
-import shutil; sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+import shutil
+
+from coq_serapy_scraper.coq_serapy.contexts import ProofContext; sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 
 from dataclasses import dataclass
-from typing import TypeVar, Dict, Any
+from typing import Deque, TypeVar, Dict, Any
 
 from pampy import match, _ #type: ignore
 
@@ -27,13 +29,18 @@ from tqdm import tqdm # type: ignore
 
 import numpy as np
 
+from collections import deque
+
+import linearize_semicolons
+
 
 def main():
     # Parse the command line arguments.
     parser = argparse.ArgumentParser(description="scrape a proof")
     parser.add_argument('-o', '--output', help="output data file name",
                         default=None)
-    parser.add_argument('-j', '--threads', default=1, type=int)
+    parser.add_argument('-j', '--threads', default=8, type=int)
+    parser.add_argument('--linearizer-timeout', default=False, type=bool)
     parser.add_argument('-c', '--continue', dest='cont', default=False,
                         const=True, action='store_const')
     parser.add_argument('--hardfail', default=False, const=True,
@@ -79,6 +86,11 @@ def main():
                             out.write(line)
 
 
+def opens_proof(cmd: str):
+  return cmd.startswith("{")
+def closes_proof(cmd: str):
+  return cmd.startswith("}")
+
 def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                 file_tuple: Tuple[int, str]) -> Optional[str]:
     sys.setrecursionlimit(4500)
@@ -93,7 +105,15 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                     eprint(f"Found existing result at {result_file}! Using it")
                 return result_file
     try:
-        commands = serapi_instance.load_commands_preserve(args, file_idx, str(full_filename))
+        collect_proof = True
+        try:
+          commands = linearize_semicolons.get_linearized(args, coqargs, file_idx, filename)
+          print("linearized!")
+        except Exception as e:
+          print("can't linearize!", e)
+          # raise e
+          collect_proof = False
+          commands = serapi_instance.load_commands_preserve(args, file_idx, str(full_filename))
         with serapi_instance.SerapiContext(
                 coqargs,
                 serapi_instance.get_module_from_filename(filename),
@@ -103,37 +123,59 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                 with open(temp_file, 'w') as f: 
                   lemmas = lemmas_in_commands(commands)
                   curr_lemma = None
+                  proof_call_stack : Deque[ProofState] = deque()
+                  curr_proof : Optional[ProofState] = None
 
                   for c_idx, cmd in enumerate([serapi_instance.kill_comments(c).strip() for c in commands]):
-                    ser_cmd = f"(Add () \"{cmd}\")"
+
+                    if curr_proof: goal_type = get_goal(coq)
+                    # print("goal:", goal_type)
                     coq.run_stmt(cmd)
-                    # send the initial command
-                    # coq._send_acked(ser_cmd)
-                    # # not sure what these are doing but ok
-                    # coq._update_state()
-                    # coq._get_completed()
-
-                    # # send the exec command, presumably cur_state is updated from get_completed
-                    # coq._send_acked("(Exec {})\n".format(coq.cur_state))
-                    # # parse a bunch of feedbacks and an answer, discard the feedbacks + answer
-                    # coq._get_feedbacks()
-
 
                     if c_idx in lemmas: 
                       curr_lemma = lemmas[c_idx]
+                      curr_proof = ProofState.empty() if collect_proof else None
+                      # print("opening proof, curr cmd is", cmd)
+                      continue
+
                     if serapi_instance.ending_proof(cmd):
                       assert curr_lemma, "current lemma not set at end of proof" 
                       name = curr_lemma.name
 
-                      type = get_type(coq, curr_lemma)
+                      type = get_type(coq, curr_lemma.name)
 
                       data = {
-                        "name": filename + "." + name,
+                        "name": f"{filename}:{coq.module_prefix}{name}",
                         "length": curr_lemma.body_length(), 
-                        "type": type
+                        "type": str(type)
                       }
+
+                      if curr_proof:
+                        if len(proof_call_stack) > 0:
+                          print(proof_call_stack)
+                          print(curr_proof)
+                          assert len(proof_call_stack) == 0, "nonempty ltac stack on proof close"
+                        
+                        data["proof"] = curr_proof.to_dict()
+
+                        curr_proof = None
+                        proof_call_stack.clear()
+
                       json.dump(data,fp=f)
                       f.write('\n')
+
+                    if curr_proof:
+                      if opens_proof(cmd):
+                        proof_call_stack.append(curr_proof)
+                        curr_proof = ProofState.empty()
+                      elif closes_proof(cmd):
+                        next_proof = proof_call_stack.pop()
+                        next_proof.append_child(curr_proof)
+                        curr_proof = next_proof
+                      else:
+                        if cmd == "Proof.": continue
+                        curr_proof.append_tac(cmd, str(goal_type))
+                    
 
                 shutil.move(temp_file, result_file)
                 return result_file
@@ -151,6 +193,37 @@ def split_cmd(c: str) -> List[str]:
   # print("splitting", c)
   output = [x for x in re.split(";", c) if len(x) > 0]
   return output
+
+@dataclass 
+class ProofStep:
+  tacs: List[str]
+  ctx: str
+
+  def to_dict(self):
+    return {
+        "tacs": self.tacs
+      , "ctx": self.ctx
+    }
+
+@dataclass
+class ProofState:
+  steps: List[ProofStep]
+  children: List['ProofState']
+
+  def append_tac(self, tac: str, ctx: str):
+    self.steps.append(ProofStep(split_cmd(tac), ctx))
+
+  def append_child(self, child: Any):
+    self.children.append(child)
+
+  @staticmethod
+  def empty(): return ProofState([], [])
+
+  def to_dict(self): 
+    return {
+        "steps": [x.to_dict() for x in self.steps]
+      , "children": [x.to_dict() for x in self.children] 
+    }
 
 @dataclass 
 class Lemma: 
@@ -177,11 +250,11 @@ def skip_proof_cmd(cmd: str):
   return cmd.strip().startswith("Proof.")
 
 
-def get_type(coq: serapi_instance.SerapiInstance, lemma: Lemma):
+def get_type(coq: serapi_instance.SerapiInstance, term: str):
   # command looks like
   # (Query () (TypeOf "lemma_name"))
 
-  ser_cmd = f"(Query () (TypeOf \"{lemma.name}\"))"
+  ser_cmd = f"(Query () (TypeOf \"{term}\"))"
   # send the command
   coq._send_acked(ser_cmd)
   # there are 3 responses: 
@@ -202,10 +275,36 @@ def get_type(coq: serapi_instance.SerapiInstance, lemma: Lemma):
 
   # an answer with Completed
   coq._get_completed()
-  return dumps(parsed[0])
+  return parsed[0]
 
+def get_goal(coq: serapi_instance.SerapiInstance):
+  # command looks like
+  # (Query ((sid {curr_state})) Ast)
 
-# TODO: get module prefix for lemma name
+  ser_cmd = f"(Query ((sid {coq.cur_state})) Ast)"
+  # send the command
+  coq._send_acked(ser_cmd)
+  # there are 3 responses: 
+  # an ack, handled above
+  # the actual result, as an answer, where the 3rd term is an s-expr of the AST
+  result = coq._get_message()
+  parsed = match(serapi_instance.normalizeMessage(result),
+              ["Answer", int, ["ObjList", _]],
+              lambda _, inner: inner,
+              _, 
+              lambda msg: serapi_instance.raise_(serapi_instance.UnrecognizedError(msg)))
+
+  if not len(parsed) == 1: 
+    serapi_instance.raise_(serapi_instance.UnrecognizedError(parsed))
+  # match(normalizeMessage(completed),
+  #       ["Answer", int, "Completed"], lambda state: None,
+  #       _, lambda msg: raise_(CompletedError(completed)))
+
+  # an answer with Completed
+  coq._get_completed()
+  coq.cur_state += 1
+  return parsed[0]
+
 def lemmas_in_commands(cmds: List[str], include_proof_relevant: bool = False) \
         -> Dict[int, Lemma]:
     lemmas: Dict[int, Lemma] = {}
