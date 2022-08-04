@@ -121,7 +121,7 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
             coq.verbose = args.verbose
             try:
                 with open(temp_file, 'w') as f: 
-                  lemmas = lemmas_in_commands(commands)
+                  lemmas = lemmas_in_commands(commands, collect_proof)
                   curr_lemma = None
                   proof_call_stack : Deque[ProofState] = deque()
                   curr_proof : Optional[ProofState] = None
@@ -147,6 +147,7 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                       data = {
                         "name": f"{filename}:{coq.module_prefix}{name}",
                         "length": curr_lemma.body_length(), 
+                        "linear": curr_lemma.linear,
                         "type": str(type)
                       }
 
@@ -229,6 +230,7 @@ class ProofState:
 class Lemma: 
   defn: str
   body: List[str]
+  linear: bool
 
   def body_length(self) -> int: 
     all_cmds = [len(y) for y in [split_cmd(x) for x in self.body if not opens_proof(x) and not closes_proof(x)]]
@@ -305,7 +307,7 @@ def get_goal(coq: serapi_instance.SerapiInstance):
   coq.cur_state += 1
   return parsed[0]
 
-def lemmas_in_commands(cmds: List[str], include_proof_relevant: bool = False) \
+def lemmas_in_commands(cmds: List[str], linear: bool, include_proof_relevant: bool = False) \
         -> Dict[int, Lemma]:
     lemmas: Dict[int, Lemma] = {}
     in_proof = False
@@ -318,7 +320,7 @@ def lemmas_in_commands(cmds: List[str], include_proof_relevant: bool = False) \
         if in_proof:
           if serapi_instance.possibly_starting_proof(cmd):
               in_proof = False
-              nxt_lemma = Lemma(defn = cmd, body = rev_new(curr_lemma_body))
+              nxt_lemma = Lemma(defn = cmd, linear = linear, body = rev_new(curr_lemma_body))
               curr_lemma_body = []
               proof_relevant = proof_relevant or \
                   cmd.strip().startswith("Derive") or \
