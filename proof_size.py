@@ -108,9 +108,9 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
         collect_proof = True
         try:
           commands = linearize_semicolons.get_linearized(args, coqargs, file_idx, filename)
-          print("linearized!")
+          print("linearized!", filename)
         except Exception as e:
-          print("can't linearize!", e)
+          print("can't linearize:", str(full_filename))
           # raise e
           collect_proof = False
           commands = serapi_instance.load_commands_preserve(args, file_idx, str(full_filename))
@@ -231,7 +231,7 @@ class Lemma:
   body: List[str]
 
   def body_length(self) -> int: 
-    all_cmds = [len(y) for y in [split_cmd(x) for x in self.body]]
+    all_cmds = [len(y) for y in [split_cmd(x) for x in self.body if not opens_proof(x) and not closes_proof(x)]]
     return sum(all_cmds)
 
   @property
