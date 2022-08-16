@@ -9,6 +9,7 @@ sexpdata = "*"
 pathlib-revised = "*"
 tqdm = "*"
 numpy = "*"
+typing-extensions = "*"
 
 [dev-packages]
 

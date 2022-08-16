@@ -8,6 +8,8 @@ from coq_serapy_scraper.coq_serapy.contexts import ProofContext; sys.path.append
 from dataclasses import dataclass
 from typing import Deque, TypeVar, Dict, Any
 
+from typing_extensions import TypedDict
+
 from pampy import match, _ #type: ignore
 
 from sexpdata import dumps #type: ignore
@@ -128,7 +130,9 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
 
                   for c_idx, cmd in enumerate([serapi_instance.kill_comments(c).strip() for c in commands]):
 
-                    if curr_proof: goal_type = get_goal(coq)
+                    if curr_proof: 
+                      goal_type = get_goal(coq)
+                      hypotheses = coq.get_hypotheses_sexp()
                     # print("goal:", goal_type)
                     coq.run_stmt(cmd)
 
@@ -139,9 +143,16 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                       continue
 
                     if serapi_instance.ending_proof(cmd):
-                      assert curr_lemma, "current lemma not set at end of proof" 
+                      if not curr_lemma:
+                        print(f"lemma not set on command #{c_idx}, {cmd}")
+                        # assert curr_lemma, "current lemma not set at end of proof" 
+                        curr_proof = None
+                        proof_call_stack.clear()
+                        continue
+
                       name = curr_lemma.name
 
+                      print("getting type for", curr_lemma.name)
                       type = get_type(coq, curr_lemma.name)
 
                       data = {
@@ -175,7 +186,11 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                         curr_proof = next_proof
                       else:
                         if cmd == "Proof.": continue
-                        curr_proof.append_tac(cmd, str(goal_type))
+                        if not goal_type: continue
+                        curr_proof.append_tac(cmd, ctx= {
+                            "hypos": [str(x) for x in hypotheses]
+                          , "type": str(goal_type)}
+                        )
                     
 
                 shutil.move(temp_file, result_file)
@@ -195,10 +210,14 @@ def split_cmd(c: str) -> List[str]:
   output = [x for x in re.split(";", c) if len(x) > 0]
   return output
 
+class ProofCtx(TypedDict):
+  hypos: List[str]
+  type: str
+
 @dataclass 
 class ProofStep:
   tacs: List[str]
-  ctx: str
+  ctx: ProofCtx
 
   def to_dict(self):
     return {
@@ -211,7 +230,7 @@ class ProofState:
   steps: List[ProofStep]
   children: List['ProofState']
 
-  def append_tac(self, tac: str, ctx: str):
+  def append_tac(self, tac: str, ctx: ProofCtx):
     self.steps.append(ProofStep(split_cmd(tac), ctx))
 
   def append_child(self, child: Any):
@@ -225,6 +244,12 @@ class ProofState:
         "steps": [x.to_dict() for x in self.steps]
       , "children": [x.to_dict() for x in self.children] 
     }
+
+# find the final prefix and take the next identifier as the name
+# prefixes: 
+# Theorem|Lemma|Fact|Remark|Corollary|Proposition|Property | Definition | Fixpoint | Equations
+# technically also Let and CoFixpoint
+# final_prefixes = ["Theorem", "Lemma", "Fact", "Remark", "Corollary", "Proposition", "Property", "Definition", "Fixpoint", "Equations"]
 
 @dataclass 
 class Lemma: 
@@ -283,29 +308,34 @@ def get_goal(coq: serapi_instance.SerapiInstance):
   # command looks like
   # (Query ((sid {curr_state})) Ast)
 
-  ser_cmd = f"(Query ((sid {coq.cur_state})) Ast)"
-  # send the command
-  coq._send_acked(ser_cmd)
-  # there are 3 responses: 
-  # an ack, handled above
-  # the actual result, as an answer, where the 3rd term is an s-expr of the AST
-  result = coq._get_message()
-  parsed = match(serapi_instance.normalizeMessage(result),
-              ["Answer", int, ["ObjList", _]],
-              lambda _, inner: inner,
-              _, 
-              lambda msg: serapi_instance.raise_(serapi_instance.UnrecognizedError(msg)))
+  goal_types = coq.get_all_sexp_goals()
 
-  if not len(parsed) == 1: 
-    serapi_instance.raise_(serapi_instance.UnrecognizedError(parsed))
-  # match(normalizeMessage(completed),
-  #       ["Answer", int, "Completed"], lambda state: None,
-  #       _, lambda msg: raise_(CompletedError(completed)))
+  # ser_cmd = f"(Query ((sid {coq.cur_state})) Ast)"
+  # # send the command
+  # coq._send_acked(ser_cmd)
+  # # there are 3 responses: 
+  # # an ack, handled above
+  # # the actual result, as an answer, where the 3rd term is an s-expr of the AST
+  # result = coq._get_message()
+  # parsed = match(serapi_instance.normalizeMessage(result),
+  #             ["Answer", int, ["ObjList", _]],
+  #             lambda _, inner: inner,
+  #             _, 
+  #             lambda msg: serapi_instance.raise_(serapi_instance.UnrecognizedError(msg)))
 
-  # an answer with Completed
-  coq._get_completed()
-  coq.cur_state += 1
-  return parsed[0]
+  # if not len(parsed) == 1: 
+  #   serapi_instance.raise_(serapi_instance.UnrecognizedError(parsed))
+  # # match(normalizeMessage(completed),
+  # #       ["Answer", int, "Completed"], lambda state: None,
+  # #       _, lambda msg: raise_(CompletedError(completed)))
+
+  # # an answer with Completed
+  # coq._get_completed()
+  # coq.cur_state += 1
+  if len(goal_types) > 0:
+    return goal_types[0]
+  else:
+    return None
 
 def lemmas_in_commands(cmds: List[str], linear: bool, include_proof_relevant: bool = False) \
         -> Dict[int, Lemma]:
