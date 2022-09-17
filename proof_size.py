@@ -151,15 +151,14 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                         continue
 
                       name = curr_lemma.name
-
-                      print("getting type for", curr_lemma.name)
                       type = get_type(coq, curr_lemma.name)
 
                       data = {
                         "name": f"{filename}:{coq.module_prefix}{name}",
                         "length": curr_lemma.body_length(), 
                         "linear": curr_lemma.linear,
-                        "type": str(type)
+                        "type": str(type),
+                        "goal" : curr_lemma.goal
                       }
 
                       if curr_proof:
@@ -187,10 +186,14 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                       else:
                         if cmd == "Proof.": continue
                         if not goal_type: continue
-                        curr_proof.append_tac(cmd, ctx= {
+                        # print("goals:")
+                        # print(coq.goals)
+                        # print(kill_whitespace(coq.goals))
+                        curr_proof.append_tac(cmd, ctx = {
                             "hypos": [str(x) for x in hypotheses]
-                          , "type": str(goal_type)}
-                        )
+                          , "type": str(goal_type)
+                          , "goal": kill_whitespace(coq.goals)
+                        })
                     
 
                 shutil.move(temp_file, result_file)
@@ -213,6 +216,7 @@ def split_cmd(c: str) -> List[str]:
 class ProofCtx(TypedDict):
   hypos: List[str]
   type: str
+  goal: str
 
 @dataclass 
 class ProofStep:
@@ -251,6 +255,9 @@ class ProofState:
 # technically also Let and CoFixpoint
 # final_prefixes = ["Theorem", "Lemma", "Fact", "Remark", "Corollary", "Proposition", "Property", "Definition", "Fixpoint", "Equations"]
 
+def kill_whitespace(s: str) -> str:
+  return re.sub("\s+", ' ', s)
+
 @dataclass 
 class Lemma: 
   defn: str
@@ -268,6 +275,11 @@ class Lemma:
       nme = nme[:-1]
     return nme
     
+  @property
+  def goal(self) -> str : 
+    goal = ' '.join(serapi_instance.kill_comments(self.defn).split()[2:])
+
+    return kill_whitespace(goal)
 
 T = TypeVar('T')
 def rev_new(xs: List[T]) -> List[T]:
@@ -305,33 +317,9 @@ def get_type(coq: serapi_instance.SerapiInstance, term: str):
   return parsed[0]
 
 def get_goal(coq: serapi_instance.SerapiInstance):
-  # command looks like
-  # (Query ((sid {curr_state})) Ast)
 
   goal_types = coq.get_all_sexp_goals()
 
-  # ser_cmd = f"(Query ((sid {coq.cur_state})) Ast)"
-  # # send the command
-  # coq._send_acked(ser_cmd)
-  # # there are 3 responses: 
-  # # an ack, handled above
-  # # the actual result, as an answer, where the 3rd term is an s-expr of the AST
-  # result = coq._get_message()
-  # parsed = match(serapi_instance.normalizeMessage(result),
-  #             ["Answer", int, ["ObjList", _]],
-  #             lambda _, inner: inner,
-  #             _, 
-  #             lambda msg: serapi_instance.raise_(serapi_instance.UnrecognizedError(msg)))
-
-  # if not len(parsed) == 1: 
-  #   serapi_instance.raise_(serapi_instance.UnrecognizedError(parsed))
-  # # match(normalizeMessage(completed),
-  # #       ["Answer", int, "Completed"], lambda state: None,
-  # #       _, lambda msg: raise_(CompletedError(completed)))
-
-  # # an answer with Completed
-  # coq._get_completed()
-  # coq.cur_state += 1
   if len(goal_types) > 0:
     return goal_types[0]
   else:
