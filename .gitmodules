@@ -1,0 +1,3 @@
+[submodule "coq_serapy_scraper"]
+	path = coq_serapy_scraper
+	url = git@github.com:HazardousPeach/coq_serapy_scraper.git
