@@ -3,4 +3,4 @@
 	url = git@github.com:HazardousPeach/coq_serapy_scraper.git
 [submodule "coq_serapy"]
 	path = coq_serapy
-	url = git@github.com:HazardousPeach/coq_serapy.git
+	url = git@github.com:jsarracino/coq_serapy.git
