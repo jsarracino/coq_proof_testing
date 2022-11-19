@@ -10,6 +10,8 @@ pathlib-revised = "*"
 tqdm = "*"
 numpy = "*"
 typing-extensions = "*"
+mypy = "*"
+coq-serapy = {path = "./coq_serapy"}
 
 [dev-packages]
 

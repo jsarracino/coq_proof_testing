@@ -3,7 +3,9 @@
 import os, sys
 import shutil
 
-from coq_serapy_scraper.coq_serapy.contexts import ProofContext; sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+from coq_serapy.contexts import ProofContext
+
+from coq_serapy.contexts import SexpObligation; sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 
 from dataclasses import dataclass
 from typing import Deque, TypeVar, Dict, Any
@@ -22,7 +24,7 @@ import contextlib
 import json
 import re
 
-import coq_serapy_scraper.coq_serapy as serapi_instance
+import coq_serapy as serapi_instance
 
 from coq_serapy_scraper.util import eprint, mybarfmt
 
@@ -33,7 +35,7 @@ import numpy as np
 
 from collections import deque
 
-import linearize_semicolons
+from coq_serapy_scraper.linearize_semicolons import get_linearized
 
 
 def main():
@@ -109,10 +111,10 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
     try:
         collect_proof = True
         try:
-          commands = linearize_semicolons.get_linearized(args, coqargs, file_idx, filename)
-          print("linearized!", filename)
+          commands = get_linearized(args, coqargs, file_idx, filename)
+          # print("linearized!", filename)
         except Exception as e:
-          print("can't linearize:", str(full_filename))
+          eprint("can't linearize:", str(full_filename))
           # raise e
           collect_proof = False
           commands = serapi_instance.load_commands_preserve(args, file_idx, str(full_filename))
@@ -127,13 +129,17 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                   curr_lemma = None
                   proof_call_stack : Deque[ProofState] = deque()
                   curr_proof : Optional[ProofState] = None
+                  goal : Optional[SexpObligation] = None
 
                   for c_idx, cmd in enumerate([serapi_instance.kill_comments(c).strip() for c in commands]):
 
+                    if curr_proof and not coq.proof_context:
+                      curr_proof = None
+
                     if curr_proof: 
-                      goal_type = get_goal(coq)
-                      hypotheses = coq.get_hypotheses_sexp()
-                    # print("goal:", goal_type)
+                      # print(coq.proof_context)
+                      goal = get_goal(coq)
+
                     coq.run_stmt(cmd)
 
                     if c_idx in lemmas: 
@@ -151,14 +157,16 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                         continue
 
                       name = curr_lemma.name
-                      type = get_type(coq, curr_lemma.name)
+                      # print(f"getting type for {name}")
+                      type_sexpr = get_type_sexpr(coq, curr_lemma.name)
+                      type_str = get_type_str(coq, curr_lemma.name)
 
                       data = {
                         "name": f"{filename}:{coq.module_prefix}{name}",
                         "length": curr_lemma.body_length(), 
                         "linear": curr_lemma.linear,
-                        "type": str(type),
-                        "goal" : curr_lemma.goal
+                        "type": str(type_sexpr),
+                        "goal_str" : type_str
                       }
 
                       if curr_proof:
@@ -184,15 +192,19 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                         next_proof.append_child(curr_proof)
                         curr_proof = next_proof
                       else:
-                        if cmd == "Proof.": continue
-                        if not goal_type: continue
+                        if re.match("Proof", cmd):
+                          if cmd.strip() == "Proof.": continue
+                          else:
+                            curr_proof = None
+                        if not goal: continue
                         # print("goals:")
                         # print(coq.goals)
                         # print(kill_whitespace(coq.goals))
                         curr_proof.append_tac(cmd, ctx = {
-                            "hypos": [str(x) for x in hypotheses]
-                          , "type": str(goal_type)
-                          , "goal": kill_whitespace(coq.goals)
+                            "hypos": [str(x) for x in goal.hypotheses]
+                          , "type": str(goal.goal)
+                          , "goal_str": kill_whitespace(coq.goals)
+                          , "hypo_strs": [kill_whitespace(x) for x in coq.hypotheses]
                         })
                     
 
@@ -214,9 +226,12 @@ def split_cmd(c: str) -> List[str]:
   return output
 
 class ProofCtx(TypedDict):
+  # these two strs are Sexprs
   hypos: List[str]
   type: str
-  goal: str
+  # and these two are coq string representations of terms
+  goal_str: str
+  hypo_strs: List[str]
 
 @dataclass 
 class ProofStep:
@@ -289,7 +304,34 @@ def skip_proof_cmd(cmd: str):
   return cmd.strip().startswith("Proof.")
 
 
-def get_type(coq: serapi_instance.SerapiInstance, term: str):
+def get_type_str(coq: serapi_instance.SerapiInstance, term: str):
+  # command looks like
+  # (Query () (TypeOf "lemma_name"))
+
+  ser_cmd = f"(Query ((pp ((pp_format PpStr)))) (TypeOf \"{term}\"))"
+  # send the command
+  coq._send_acked(ser_cmd)
+  # there are 3 responses: 
+  # an ack, handled above
+  # the actual result, as an answer, where the 3rd term is an s-expr of the AST
+  result = coq._get_message()
+  parsed = match(serapi_instance.normalizeMessage(result),
+              ["Answer", int, ["ObjList", _]],
+              lambda _, inner: inner,
+              _, 
+              lambda msg: serapi_instance.raise_(serapi_instance.UnrecognizedError(msg)))
+
+  if not len(parsed) == 1: 
+    serapi_instance.raise_(serapi_instance.UnrecognizedError(parsed))
+  # match(normalizeMessage(completed),
+  #       ["Answer", int, "Completed"], lambda state: None,
+  #       _, lambda msg: raise_(CompletedError(completed)))
+
+  # an answer with Completed
+  coq._get_completed()
+  return parsed[0][1]
+
+def get_type_sexpr(coq: serapi_instance.SerapiInstance, term: str):
   # command looks like
   # (Query () (TypeOf "lemma_name"))
 
