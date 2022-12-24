@@ -1,3 +1,5 @@
 #!/usr/bin/env sh
 
-find CompCert/. -type f -name "*.complex*" -exec rm {} +
+# first argument is directory for find, e.g. CompCert
+
+find $1/. -type f -name "*.complex*" -exec rm {} +

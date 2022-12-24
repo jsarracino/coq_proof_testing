@@ -1,3 +1,6 @@
 #!/usr/bin/env sh
 
-find CompCert/. -type f -name "*.complex" -exec cat {} + > total.complex
+# first argument is directory for find, e.g. CompCert
+prefix=$(basename $1)
+
+find $1/. -type f -name "*.complex" -exec cat {} + > $prefix.complex

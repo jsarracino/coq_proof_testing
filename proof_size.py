@@ -60,6 +60,7 @@ def main():
     parser.add_argument('inputs', nargs="+", help="proof file name(s) (*.v)")
     args = parser.parse_args()
 
+    
     try:
         with open(args.prelude + "/_CoqProject", 'r') as includesfile:
             includes = includesfile.read()
@@ -68,26 +69,43 @@ def main():
         includes = ""
     # Set up the command which runs sertop.
     coqargs = ["sertop", "--implicit"]
-    tasks = [(idx % args.threads, filename) for (idx, filename)
-             in enumerate(args.inputs)]
-    with multiprocessing.Pool(args.threads) as pool:
-        result_files = pool.imap(
-            functools.partial(measure_file, coqargs, args, includes),
-            tasks)
-        with (open(args.output, 'w') if args.output
-              else contextlib.nullcontext(sys.stdout)) as out:
-            for idx, result_file in enumerate(result_files,
-                                                     start=1):
-                if result_file is None:
-                    eprint("Failed file {} of {}"
-                           .format(idx, len(args.inputs)))
-                else:
-                    if args.verbose:
-                        eprint("Finished file {} of {}"
-                               .format(idx, len(args.inputs)))
-                    with open(result_file, 'r') as f:
-                        for line in f:
-                            out.write(line)
+
+    if args.threads > 1:
+      tasks = [(idx % args.threads, filename) for (idx, filename)
+              in enumerate(args.inputs)]
+      with multiprocessing.Pool(args.threads) as pool:
+          result_files = pool.imap(
+              functools.partial(measure_file, coqargs, args, includes),
+              tasks)
+          with (open(args.output, 'w') if args.output
+                else contextlib.nullcontext(sys.stdout)) as out:
+              for idx, result_file in enumerate(result_files,
+                                                      start=1):
+                  if result_file is None:
+                      eprint("Failed file {} of {}"
+                            .format(idx, len(args.inputs)))
+                  else:
+                      if args.verbose:
+                          eprint("Finished file {} of {}"
+                                .format(idx, len(args.inputs)))
+                      with open(result_file, 'r') as f:
+                          for line in f:
+                              out.write(line)
+    else:
+      with (open(args.output, 'w') if args.output
+          else contextlib.nullcontext(sys.stdout)) as out:
+        for idx, filename in enumerate(args.inputs, start=1):
+          result_file = measure_file(coqargs, args, includes, (idx, filename))
+          if result_file is None:
+              eprint("Failed file {} of {}"
+                    .format(idx, len(args.inputs)))
+          else:
+              if args.verbose:
+                  eprint("Finished file {} of {}"
+                        .format(idx, len(args.inputs)))
+              with open(result_file, 'r') as f:
+                  for line in f:
+                      out.write(line)
 
 
 def opens_proof(cmd: str):
@@ -123,8 +141,8 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                 serapi_instance.get_module_from_filename(filename),
                 args.prelude, False) as coq:
             coq.verbose = args.verbose
-            try:
-                with open(temp_file, 'w') as f: 
+            try: 
+                with open(temp_file, 'w') as f, open("proof_size_debug.out", 'w') as debug_file: 
                   lemmas = lemmas_in_commands(commands, collect_proof)
                   curr_lemma = None
                   proof_call_stack : Deque[ProofState] = deque()
@@ -141,14 +159,19 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                       goal = get_goal(coq)
 
                     coq.run_stmt(cmd)
+                    print(cmd, file = debug_file)
+                    if curr_lemma:
+                      print(f"(* current lemma: {curr_lemma.name} *)",file=debug_file)
 
                     if c_idx in lemmas: 
                       curr_lemma = lemmas[c_idx]
+                      # print(f"lemma for {curr_lemma.name}:", curr_lemma)
                       curr_proof = ProofState.empty() if collect_proof else None
                       # print("opening proof, curr cmd is", cmd)
                       continue
 
                     if serapi_instance.ending_proof(cmd):
+                      # print("closing proof:", cmd)
                       if not curr_lemma:
                         print(f"lemma not set on command #{c_idx}, {cmd}")
                         # assert curr_lemma, "current lemma not set at end of proof" 
@@ -156,56 +179,72 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                         proof_call_stack.clear()
                         continue
 
-                      name = curr_lemma.name
-                      # print(f"getting type for {name}")
-                      type_sexpr = get_type_sexpr(coq, curr_lemma.name)
-                      type_str = get_type_str(coq, curr_lemma.name)
-
-                      data = {
-                        "name": f"{filename}:{coq.module_prefix}{name}",
-                        "length": curr_lemma.body_length(), 
-                        "linear": curr_lemma.linear,
-                        "type": str(type_sexpr),
-                        "goal_str" : type_str
-                      }
-
-                      if curr_proof:
-                        if len(proof_call_stack) > 0:
-                          print(proof_call_stack)
-                          print(curr_proof)
-                          assert len(proof_call_stack) == 0, "nonempty ltac stack on proof close"
-                        
-                        data["proof"] = curr_proof.to_dict()
-
+                      if curr_lemma.body_length() < 1:
+                        print(f"weird zero length proof? at #{c_idx}, {cmd}")
                         curr_proof = None
                         proof_call_stack.clear()
+                        continue
 
-                      json.dump(data,fp=f)
-                      f.write('\n')
+                      name = curr_lemma.name.strip()
+                      # print(f"getting type for {name} at idx {c_idx}")
+                      # print(f"command: {cmd}")
+                      try:
+                        type_sexpr = get_type_sexpr(coq, f"{name}")
+                        type_str = get_type_str(coq, f"{name}")
 
-                    if curr_proof:
-                      if opens_proof(cmd):
-                        proof_call_stack.append(curr_proof)
-                        curr_proof = ProofState.empty()
-                      elif closes_proof(cmd):
-                        next_proof = proof_call_stack.pop()
-                        next_proof.append_child(curr_proof)
-                        curr_proof = next_proof
-                      else:
-                        if re.match("Proof", cmd):
-                          if cmd.strip() == "Proof.": continue
-                          else:
-                            curr_proof = None
-                        if not goal: continue
-                        # print("goals:")
-                        # print(coq.goals)
-                        # print(kill_whitespace(coq.goals))
-                        curr_proof.append_tac(cmd, ctx = {
-                            "hypos": [str(x) for x in goal.hypotheses]
-                          , "type": str(goal.goal)
-                          , "goal_str": kill_whitespace(coq.goals)
-                          , "hypo_strs": [kill_whitespace(x) for x in coq.hypotheses]
-                        })
+                        data = {
+                          "name": f"{filename}:{coq.module_prefix}{name}",
+                          "length": curr_lemma.body_length(), 
+                          "linear": curr_lemma.linear,
+                          "type": str(type_sexpr),
+                          "goal_str" : type_str
+                        }
+
+                        if curr_proof:
+                          if len(proof_call_stack) > 0:
+                            print(proof_call_stack)
+                            print(curr_proof)
+                            assert len(proof_call_stack) == 0, "nonempty ltac stack on proof close"
+                          
+                          data["proof"] = curr_proof.to_dict()
+
+                          curr_proof = None
+                          curr_lemma = None
+                          proof_call_stack.clear()
+
+                        json.dump(data,fp=f)
+                        f.write('\n')
+                      except Exception as e:
+                        eprint(f"exception for: {filename}:{coq.module_prefix}{name}")
+                        eprint(e)
+                        if args.hardfail: raise e
+                        curr_proof = None
+                        proof_call_stack.clear()
+                        continue
+
+                      if curr_proof:
+                        if opens_proof(cmd):
+                          proof_call_stack.append(curr_proof)
+                          curr_proof = ProofState.empty()
+                        elif closes_proof(cmd):
+                          next_proof = proof_call_stack.pop()
+                          next_proof.append_child(curr_proof)
+                          curr_proof = next_proof
+                        else:
+                          if re.match("Proof", cmd):
+                            if cmd.strip() == "Proof.": continue
+                            else:
+                              curr_proof = None
+                          if not goal: continue
+                          # print("goals:")
+                          # print(coq.goals)
+                          # print(kill_whitespace(coq.goals))
+                          curr_proof.append_tac(cmd, ctx = {
+                              "hypos": [str(x) for x in goal.hypotheses]
+                            , "type": str(goal.goal)
+                            , "goal_str": kill_whitespace(coq.goals)
+                            , "hypo_strs": [kill_whitespace(x) for x in coq.hypotheses]
+                          })
                     
 
                 shutil.move(temp_file, result_file)
@@ -332,6 +371,7 @@ def get_type_str(coq: serapi_instance.SerapiInstance, term: str):
   return parsed[0][1]
 
 def get_type_sexpr(coq: serapi_instance.SerapiInstance, term: str):
+  # print("getting type of:", term)
   # command looks like
   # (Query () (TypeOf "lemma_name"))
 
@@ -371,24 +411,9 @@ def lemmas_in_commands(cmds: List[str], linear: bool, include_proof_relevant: bo
         -> Dict[int, Lemma]:
     lemmas: Dict[int, Lemma] = {}
     in_proof = False
-    proof_relevant = False
     curr_lemma_body : List[str] = []
     for c_idx, cmd in reversed(list(enumerate(cmds))):
         cmd = serapi_instance.kill_comments(cmd)
-        if cmd == "":
-          continue
-        if in_proof:
-          if serapi_instance.possibly_starting_proof(cmd):
-              in_proof = False
-              nxt_lemma = Lemma(defn = cmd, linear = linear, body = rev_new(curr_lemma_body))
-              curr_lemma_body = []
-              proof_relevant = proof_relevant or \
-                  cmd.strip().startswith("Derive") or \
-                  cmd.strip().startswith("Equations")
-              if include_proof_relevant or not proof_relevant:
-                  lemmas[c_idx] = nxt_lemma
-          else: 
-            if not skip_proof_cmd(cmd): curr_lemma_body.append(cmd.strip())
         if serapi_instance.ending_proof(cmd):
             proof_match = re.match(r"Proof.*", cmd)
             with_match = re.match(r".*with.*", cmd)
@@ -396,7 +421,6 @@ def lemmas_in_commands(cmds: List[str], linear: bool, include_proof_relevant: bo
 
             in_proof = True
             curr_lemma_body = []
-            proof_relevant = cmd.strip() == "Defined."
 
 
             if proof_match:
@@ -404,6 +428,23 @@ def lemmas_in_commands(cmds: List[str], linear: bool, include_proof_relevant: bo
                 curr_lemma_body = [parens_match.group(1)]
               if with_match: 
                 print("found with match in:", cmd)
+        if cmd == "":
+          continue
+        if in_proof:
+          if serapi_instance.possibly_starting_proof(cmd):
+              in_proof = False
+              nxt_lemma = Lemma(defn = cmd, linear = linear, body = rev_new(curr_lemma_body))
+              curr_lemma_body = []
+              uses_obligations = cmd.strip().startswith("Equations") or \
+                  cmd.strip().startswith("Program") or \
+                  cmd.strip().startswith("Next Obligation")
+              if (include_proof_relevant and uses_obligations) or not uses_obligations:
+                  lemmas[c_idx] = nxt_lemma
+              else:
+                  nxt_lemma = None
+          else: 
+            if not skip_proof_cmd(cmd): curr_lemma_body.append(cmd.strip())
+        
 
 
     return lemmas
