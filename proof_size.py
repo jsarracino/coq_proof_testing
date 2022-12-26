@@ -158,10 +158,18 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
                       # print(coq.proof_context)
                       goal = get_goal(coq)
 
-                    coq.run_stmt(cmd)
                     print(cmd, file = debug_file)
-                    if curr_lemma:
-                      print(f"(* current lemma: {curr_lemma.name} *)",file=debug_file)
+
+                    if hides_info(cmd):
+                      cmd = extract_info(coq, cmd)
+                    else:
+                      coq.run_stmt(cmd)
+
+
+                    if args.threads == 1:
+                      print(cmd, file = debug_file)
+                    # if curr_lemma:
+                      # print(f"(* current lemma: {curr_lemma.name} *)",file=debug_file)
 
                     if c_idx in lemmas: 
                       curr_lemma = lemmas[c_idx]
@@ -258,6 +266,21 @@ def measure_file(coqargs: List[str], args: argparse.Namespace, includes: str,
         if args.hardfail or len(args.inputs) == 1:
             raise e
     return None
+
+def hides_info(cmd: str):
+  return cmd.strip() in ["eauto.", "auto.", "trivial."]
+
+
+def extract_info(coq : serapi_instance.SerapiInstance, cmd: str):
+  info_cmd = f"info_{cmd}"
+
+  coq.run_stmt(info_cmd)
+  tactic_str = str(coq.feedbacks[3][1][3][1][-1][-1])
+
+  tactic_str = tactic_str.split('(in ')[0]
+
+  return tactic_str.strip() + '.'
+
 
 def split_cmd(c: str) -> List[str]: 
   # print("splitting", c)
